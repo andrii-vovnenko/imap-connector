@@ -1,19 +1,27 @@
-import repl from 'repl';
+import { ImapFlow } from 'imapflow';
 
-const myAPI = {
-  time: () => `Current time: ${new Date().toLocaleTimeString()}`,
+import dotenv from 'dotenv';
+dotenv.config();
+
+console.log({
+  EMAIL: process.env.EMAIL,
+  PASS: process.env.PASS,
+});
+
+const ImapClient = new ImapFlow({
+  host: 'imap.gmail.com',
+  port: 993,
+  secure: true,
+  auth: {
+    user: process.env.EMAIL || '',
+    pass: process.env.PASS,
+  },
+  logger: false,
+});
+
+async function main() {
+  await ImapClient.connect();
+  let mailbox = await ImapClient.mailboxOpen('INBOX');
 };
 
-const replServer = repl.start({
-  prompt: "> ",
-  eval: (cmd, _context, _filename, callback) => {
-    console.log(`Received command: ${cmd}`);
-    try {
-      const result = eval(cmd); // Execute command
-      callback(null, result);
-    } catch (err) {
-      callback(err as Error, null);
-    }
-  },
-  writer: (output) => `${output}`, // Format output
-});
+main();

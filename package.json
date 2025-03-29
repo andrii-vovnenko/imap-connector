@@ -20,12 +20,14 @@
   "homepage": "https://github.com/andrii-vovnenko/imap-connector#readme",
   "description": "",
   "devDependencies": {
+    "@types/imapflow": "^1.0.20",
     "@types/node": "^22.13.1",
     "nodemon": "^3.1.9",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.3"
   },
   "dependencies": {
+    "dotenv": "^16.4.7",
     "imapflow": "^1.0.181"
   }
 }
