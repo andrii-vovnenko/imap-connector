@@ -1,14 +1,10 @@
 import { ImapFlow } from 'imapflow';
+import imap from 'imapflow';
 
 import dotenv from 'dotenv';
 dotenv.config();
 
-console.log({
-  EMAIL: process.env.EMAIL,
-  PASS: process.env.PASS,
-});
-
-const ImapClient = new ImapFlow({
+const client = new ImapFlow({
   host: 'imap.gmail.com',
   port: 993,
   secure: true,
@@ -17,11 +13,50 @@ const ImapClient = new ImapFlow({
     pass: process.env.PASS,
   },
   logger: false,
+
 });
 
-async function main() {
-  await ImapClient.connect();
-  let mailbox = await ImapClient.mailboxOpen('INBOX');
+const fetchMessageParams: imap.FetchQueryObject = {
+  uid: true,
+  flags: true,
+  envelope: true,
+  size: true,
+  source: true,
+  bodyStructure: true
 };
+
+async function main() {
+  try {
+    await client.connect();
+    let mailbox = await client.mailboxOpen('INBOX');
+    let counter = 0;
+    const sourceToCount: Record<string, number> = {};
+    for await (let msg of client.fetch('1:500', fetchMessageParams)){
+      const source = msg.envelope.sender.map(s => s.address).join(', ');
+      sourceToCount[source] = (sourceToCount[source] || 0) + 1;
+      counter++;
+   }
+    console.log('Source to count:', sourceToCount);
+    console.log('Total messages:', counter);
+    console.log('Mailbox:', mailbox.exists);
+  } catch (e) {
+    console.error('Error connecting to IMAP server:', e);
+  } finally {
+    await client.logout();
+    console.log('Disconnected');
+  }
+
+};
+
+const signals = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
+
+signals.forEach((signal) => {
+  process.on(signal, async () => {
+    console.log(`Received ${signal}. Disconnecting...`);
+    await client.logout();
+    console.log('Disconnected');
+    process.exit(0);
+  });
+});
 
 main();
