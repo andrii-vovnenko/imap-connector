@@ -1,7 +1,9 @@
 import { ImapFlow } from 'imapflow';
 import imap from 'imapflow';
-
 import dotenv from 'dotenv';
+import fs from 'fs';
+import { select } from '@inquirer/prompts'
+
 dotenv.config();
 
 const client = new ImapFlow({
@@ -13,40 +15,150 @@ const client = new ImapFlow({
     pass: process.env.PASS,
   },
   logger: false,
-
 });
 
-const fetchMessageParams: imap.FetchQueryObject = {
-  uid: true,
-  flags: true,
-  envelope: true,
-  size: true,
-  source: true,
-  bodyStructure: true
-};
+class Client {
+  private imapClient: ImapFlow;
+  private UPDATE_SCREEN_INTERVAL = 200;
+  private currentScreen = 'main';
+  private renderedScreen = '';
+  private selectedSource = '';
+  private sources: Array<string> = [];
+  private interval: NodeJS.Timeout | null = null;
+  private screens: Record<string, Function> = {
+    'main': this.mainScreenRender,
+    'exit': this.exit,
+    'sourcesList': this.sourcesListRender,
+    'sourceActions': this.sourceActionsRender,
+  }; 
 
-async function main() {
-  try {
-    await client.connect();
-    let mailbox = await client.mailboxOpen('INBOX');
-    let counter = 0;
-    const sourceToCount: Record<string, number> = {};
-    for await (let msg of client.fetch('1:500', fetchMessageParams)){
-      const source = msg.envelope.sender.map(s => s.address).join(', ');
-      sourceToCount[source] = (sourceToCount[source] || 0) + 1;
-      counter++;
-   }
-    console.log('Source to count:', sourceToCount);
-    console.log('Total messages:', counter);
-    console.log('Mailbox:', mailbox.exists);
-  } catch (e) {
-    console.error('Error connecting to IMAP server:', e);
-  } finally {
-    await client.logout();
-    console.log('Disconnected');
+  constructor(imapClient: ImapFlow) {
+    this.imapClient = client;
+    this.sources = [
+      "support@hello.pokermatch.com",
+      "googlecommunityteam-noreply@google.com",
+      "support=redstarpoker.eu@mail-mg.redstarpoker.com",
+      "noreply@steampowered.com",
+      "info@emails.partypoker.com",
+      "no-reply@accounts.google.com",
+      "promo@emails.partypoker.com",
+      "noreply@stepik.org",
+      "info@codewars.com",
+      "no-reply@youtube.com"
+    ];
+
+    this.run();
   }
 
+  async run() {
+    this.interval = setInterval(async () => {
+      if (this.renderedScreen === this.currentScreen) return;
+      this.renderedScreen = this.currentScreen;
+
+      this.screens[this.currentScreen].call(this);
+
+    }, this.UPDATE_SCREEN_INTERVAL);
+  }
+
+  async mainScreenRender() {
+    const currentScreen = await select({
+      message: `Found ${this.sources.length} sources. Select further actions:`,
+      choices: [
+        {
+          name: 'show sources',
+          value: 'sourcesList',
+        },
+        {
+          name: 'reload sources',
+          value: 'reloadSources',
+        },
+        {
+          name: 'exit',
+          value: 'exit',
+        },
+      ],
+    });
+
+    this.onSelect(currentScreen, () => {});
+  }
+
+  onSelect(answer: string, cb: Function) {
+    if (this.screens[answer]) {
+      this.currentScreen = answer;
+      return;
+    }
+
+    return cb();
+  }
+
+  async sourcesListRender() {
+    const answer = await select({
+      message: `Select further actions:`,
+      choices: [
+        ...this.sources.map(source => ({
+          name: source,
+          value: source,
+        })),
+        {
+          name: 'back',
+          value: 'main',
+        },
+      ],
+      loop: false
+    });
+
+    this.onSelect(answer, () => {
+      this.selectedSource = answer;
+      this.currentScreen = 'sourceActions';
+    });
+  }
+
+  async sourceActionsRender() {
+    const answer = await select({
+      message: `Selected source: ${this.selectedSource}. Select further actions:`,
+      choices: [
+        {
+          name: 'show emails',
+          value: 'showEmails',
+        },
+        {
+          name: 'delete emails',
+          value: 'deleteEmails',
+        },
+        {
+          name: 'back',
+          value: 'sourcesList',
+        }
+      ]
+    });
+
+    this.onSelect(answer, () => {});
+  }
+
+  exit() {
+    clearInterval(this.interval!);
+    process.exit(0);
+  }
+}
+
+const fetchMessageParams: imap.FetchQueryObject = {
+  envelope: true,
 };
+
+// async function main() {
+//   try {
+//     await client.connect();
+//     let mailbox = await client.mailboxOpen('INBOX');
+    
+//     await fillSources();
+//   } catch (e) {
+//     console.error('Error connecting to IMAP server:', e);
+//   } finally {
+//     await client.logout();
+//     console.log('Disconnected');
+//   }
+
+// };
 
 const signals = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
 
@@ -59,4 +171,4 @@ signals.forEach((signal) => {
   });
 });
 
-main();
+new Client(client);
