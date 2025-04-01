@@ -24,12 +24,16 @@ class Client {
   private renderedScreen = '';
   private selectedSource = '';
   private sources: Array<string> = [];
+  private emails: Array<any> = [];
+  private selectedEmail: any;
   private interval: NodeJS.Timeout | null = null;
+  private mailbox: any;
   private screens: Record<string, Function> = {
     'main': this.mainScreenRender,
     'exit': this.exit,
     'sourcesList': this.sourcesListRender,
     'sourceActions': this.sourceActionsRender,
+    'showEmails': this.showEmailsRender,
   }; 
 
   constructor(imapClient: ImapFlow) {
@@ -51,6 +55,8 @@ class Client {
   }
 
   async run() {
+    await this.imapClient.connect();
+    this.mailbox = await this.imapClient.mailboxOpen('INBOX');
     this.interval = setInterval(async () => {
       if (this.renderedScreen === this.currentScreen) return;
       this.renderedScreen = this.currentScreen;
@@ -113,6 +119,43 @@ class Client {
     });
   }
 
+  async showEmailsRender() {
+    const loadingChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let i = 0;
+    const loadingInterval = setInterval(() => {
+      process.stdout.write(`\r${loadingChars[i]} Loading emails...`);
+      i = (i + 1) % loadingChars.length;
+    }, 100);
+    const emails = client.fetch(
+      { all: true, from: this.selectedSource },
+      { envelope: true }
+    );
+
+    for await (const email of emails) {
+      this.emails.push(email);
+    }
+    clearInterval(loadingInterval);
+    process.stdout.write('\r');
+    const answer = await select({
+      message: `${this.emails.length} emails loaded. Select email:`,
+      choices: [
+        ...this.emails.map(email => ({
+          name: email.envelope.subject,
+          value: email.uid,
+        })),
+        {
+          name: 'back',
+          value: 'sourcesList',
+        }
+      ],
+    });
+
+    this.onSelect(answer, () => {
+      this.selectedEmail = answer;
+      this.currentScreen = 'emailActions';
+    });
+  }
+
   async sourceActionsRender() {
     const answer = await select({
       message: `Selected source: ${this.selectedSource}. Select further actions:`,
@@ -145,21 +188,28 @@ const fetchMessageParams: imap.FetchQueryObject = {
   envelope: true,
 };
 
-// async function main() {
-//   try {
-//     await client.connect();
-//     let mailbox = await client.mailboxOpen('INBOX');
-    
-//     await fillSources();
-//   } catch (e) {
-//     console.error('Error connecting to IMAP server:', e);
-//   } finally {
-//     await client.logout();
-//     console.log('Disconnected');
-//   }
+async function main() {
+  try {
+    await client.connect();
+    let mailbox = await client.mailboxOpen('INBOX');
+    const emails = client.fetch(
+      { all: true, from: 'support@hello.pokermatch.com' },
+      { envelope: true }
+    );
 
-// };
+    for await (const email of emails) {
+      console.log(email);
+    }
 
+  } catch (e) {
+    console.error('Error connecting to IMAP server:', e);
+  } finally {
+    await client.logout();
+    console.log('Disconnected');
+  }
+
+};
+// main();
 const signals = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
 
 signals.forEach((signal) => {
