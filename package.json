@@ -29,6 +29,7 @@
   "dependencies": {
     "@inquirer/prompts": "^7.4.0",
     "dotenv": "^16.4.7",
+    "html-to-text": "^9.0.5",
     "imapflow": "^1.0.181",
     "serialize-javascript": "^6.0.2"
   }

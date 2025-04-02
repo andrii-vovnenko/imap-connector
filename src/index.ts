@@ -1,9 +1,10 @@
 import { ImapFlow } from 'imapflow';
 import imap from 'imapflow';
 import dotenv from 'dotenv';
-import fs from 'fs';
 import { select } from '@inquirer/prompts'
-
+import { htmlToText } from 'html-to-text';
+import fs from 'fs';
+import { decodeEmailParts, decodeBase64 } from './decode.ts';
 dotenv.config();
 
 const client = new ImapFlow({
@@ -34,11 +35,14 @@ class Client {
     'sourcesList': this.sourcesListRender,
     'sourceActions': this.sourceActionsRender,
     'showEmails': this.showEmailsRender,
-  }; 
+    'emailActions': this.emailActionsRender,
+    'emailBody': this.emailBodyRender,
+  };
 
   constructor(imapClient: ImapFlow) {
     this.imapClient = client;
     this.sources = [
+      "K.Neunkirchen@endter.eu",
       "support@hello.pokermatch.com",
       "googlecommunityteam-noreply@google.com",
       "support=redstarpoker.eu@mail-mg.redstarpoker.com",
@@ -130,7 +134,7 @@ class Client {
       { all: true, from: this.selectedSource },
       { envelope: true }
     );
-
+    this.emails = [];
     for await (const email of emails) {
       this.emails.push(email);
     }
@@ -141,7 +145,7 @@ class Client {
       choices: [
         ...this.emails.map(email => ({
           name: email.envelope.subject,
-          value: email.uid,
+          value: email.seq,
         })),
         {
           name: 'back',
@@ -153,6 +157,77 @@ class Client {
     this.onSelect(answer, () => {
       this.selectedEmail = answer;
       this.currentScreen = 'emailActions';
+    });
+  }
+
+  async emailActionsRender() {
+    const answer = await select({
+      message: `Selected email: ${this.selectedEmail}. Select further actions:`,
+      choices: [
+        {
+          name: 'delete email',
+          value: 'deleteEmail',
+        },
+        {
+          name: 'email body',
+          value: 'emailBody',
+        },
+        {
+          name: 'back',
+          value: 'showEmails',
+        },
+      ]
+    });
+
+    this.onSelect(answer, async () => {
+      if (answer === 'deleteEmail') {
+        await this.imapClient.messageDelete({ uid: this.selectedEmail });
+        this.currentScreen = 'showEmails';
+      }
+    });
+  }
+
+  async emailBodyRender() {
+    const email = await this.imapClient.download(
+      this.selectedEmail,
+    );
+
+    let content = '';
+    for await (const chunk of email.content) {
+      content += chunk.toString();
+    }
+
+    const decoded = decodeEmailParts(content);
+    if (decoded.html) {
+      fs.writeFileSync('email.html', decoded.html);
+    }
+    if (decoded.text) {
+      fs.writeFileSync('email.txt', decoded.text);
+    }
+    for (const attachment of decoded.attachments) {
+      if (!fs.existsSync('attachments')) {
+        fs.mkdirSync('attachments');
+      }
+      fs.writeFileSync(`attachments/${attachment.filename}`, attachment.content);
+    }
+
+    const answer = await select({
+      message: htmlToText(decoded.html),
+      choices: [
+        ...decoded.attachments.map((attachment: { filename: string; content: Buffer }) => ({
+          name: attachment.filename,
+          value: attachment.filename,
+          disabled: true,
+        })),
+        {
+          name: 'back',
+          value: 'emailActions'
+        }
+      ]
+    });
+
+    this.onSelect(answer, () => {
+      this.currentScreen = answer;
     });
   }
 
