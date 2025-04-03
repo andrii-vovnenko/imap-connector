@@ -1,10 +1,10 @@
 import { ImapFlow } from 'imapflow';
 import imap from 'imapflow';
 import dotenv from 'dotenv';
-import { select } from '@inquirer/prompts'
+import { select, Separator } from '@inquirer/prompts'
 import { htmlToText } from 'html-to-text';
 import fs from 'fs';
-import { decodeEmailParts, decodeBase64 } from './decode.ts';
+import { stdout } from 'process';
 dotenv.config();
 
 const client = new ImapFlow({
@@ -132,7 +132,7 @@ class Client {
     }, 100);
     const emails = client.fetch(
       { all: true, from: this.selectedSource },
-      { envelope: true }
+      { envelope: true, bodyStructure: true }
     );
     this.emails = [];
     for await (const email of emails) {
@@ -145,7 +145,7 @@ class Client {
       choices: [
         ...this.emails.map(email => ({
           name: email.envelope.subject,
-          value: email.seq,
+          value: email,
         })),
         {
           name: 'back',
@@ -161,16 +161,55 @@ class Client {
   }
 
   async emailActionsRender() {
+    const email: {
+      htmlPart: any,
+      attachments: any[],
+    } = {
+      htmlPart: null,
+      attachments: [],
+    };
+
+    function processEmailParts(parts: any) {
+      if (!Array.isArray(parts)) parts = [parts];
+      for (let part of parts) {
+        if (part.type.startsWith("text/html")) {
+            email.htmlPart = part;
+        } else if (part.disposition === "attachment") {
+            email.attachments.push(part);
+        } else if (part.childNodes) {
+            processEmailParts(part.childNodes);
+        }
+      }
+    }
+
+    processEmailParts(this.selectedEmail.bodyStructure);
+
+    this.selectedEmail.content = email;
+
     const answer = await select({
-      message: `Selected email: ${this.selectedEmail}. Select further actions:`,
+      message: `Selected email: ${this.selectedEmail.envelope.subject}. Select further actions:`,
       choices: [
+        {
+          name: 'show email',
+          value: 'emailBody',
+        },
+        {
+          name: 'download email',
+          value: 'downloadEmail',
+        },
+        ...(
+          email.attachments.length ?
+            [new Separator('Attachments:'),
+            ...email.attachments.map((attachment: any, index: number) => ({
+              name: `Download attachment: ${attachment.dispositionParameters.filename || attachment.description}`,
+              value: `downloadAttachment:${index}`,
+            }))
+          ]
+          : []
+        ),
         {
           name: 'delete email',
           value: 'deleteEmail',
-        },
-        {
-          name: 'email body',
-          value: 'emailBody',
         },
         {
           name: 'back',
@@ -183,42 +222,85 @@ class Client {
       if (answer === 'deleteEmail') {
         await this.imapClient.messageDelete({ uid: this.selectedEmail });
         this.currentScreen = 'showEmails';
+      } else if (answer.startsWith('downloadAttachment:')) {
+        const index = parseInt(answer.split(':')[1]);
+        const attachment = this.selectedEmail.content.attachments[index];
+        
+        const stream = await this.imapClient.download(this.selectedEmail.seq, attachment.part);
+        console.log(stream);
+        
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream.content) {
+          chunks.push(Buffer.from(chunk));
+        }
+        const content = Buffer.concat(chunks);
+
+        if (!fs.existsSync('attachments')) {
+          fs.mkdirSync('attachments');
+        }
+        fs.writeFileSync(`attachments/${attachment.dispositionParameters.filename.replace(/\s+/g, '_')}`, content);
+        stdout.write(`Attachment saved to attachments/${attachment.dispositionParameters.filename.replace(/\s+/g, '_')}\n`);
+        this.renderedScreen = '';
+        this.currentScreen = 'emailActions';
+      } else if (answer === 'downloadEmail') {
+        const email = await this.imapClient.download(
+          this.selectedEmail.seq,
+          this.selectedEmail.content.htmlPart.part
+        );
+        let content = '';
+        for await (const chunk of email.content) {
+          if (email.meta.charset) {
+            content += chunk.toString(email.meta.charset);
+          } else {
+            content += Buffer.from(chunk);
+          }
+        }
+
+        if (!fs.existsSync('emails')) {
+          fs.mkdirSync('emails');
+        }
+
+        fs.writeFileSync(`emails/${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}.html`, content);
+        stdout.write(`Email saved to emails/${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}.html\n`);
+        this.renderedScreen = '';
+        this.currentScreen = 'emailActions';
       }
     });
   }
 
   async emailBodyRender() {
     const email = await this.imapClient.download(
-      this.selectedEmail,
+      this.selectedEmail.seq,
+      this.selectedEmail.content.htmlPart.part
     );
 
-    let content = '';
-    for await (const chunk of email.content) {
-      content += chunk.toString();
-    }
-
-    const decoded = decodeEmailParts(content);
-    if (decoded.html) {
-      fs.writeFileSync('email.html', decoded.html);
-    }
-    if (decoded.text) {
-      fs.writeFileSync('email.txt', decoded.text);
-    }
-    for (const attachment of decoded.attachments) {
-      if (!fs.existsSync('attachments')) {
-        fs.mkdirSync('attachments');
+    const chunks: Buffer[] = [];
+      for await (const chunk of email.content) {
+        chunks.push(Buffer.from(chunk));
       }
-      fs.writeFileSync(`attachments/${attachment.filename}`, attachment.content);
-    }
+    const content = Buffer.concat(chunks);
+
 
     const answer = await select({
-      message: htmlToText(decoded.html),
+      message: htmlToText(content.toString(), {
+        wordwrap: false,
+        ignoreHref: true,
+        ignoreImage: true,
+        ignoreLink: true,
+        ignoreHeading: true,
+        preserveNewlines: false,
+        singleNewLineParagraphs: true,
+      }),
+      loop: false,
       choices: [
-        ...decoded.attachments.map((attachment: { filename: string; content: Buffer }) => ({
-          name: attachment.filename,
-          value: attachment.filename,
-          disabled: true,
-        })),
+        {
+          name: 'Download email',
+          value: 'downloadEmail',
+        },
+        {
+          name: 'Delete email',
+          value: 'deleteEmail',
+        },
         {
           name: 'back',
           value: 'emailActions'
@@ -227,7 +309,10 @@ class Client {
     });
 
     this.onSelect(answer, () => {
-      this.currentScreen = answer;
+      if (answer === 'deleteEmail') {
+        this.imapClient.messageDelete({ uid: this.selectedEmail });
+        this.currentScreen = 'showEmails';
+      }
     });
   }
 
