@@ -126,13 +126,26 @@ class Client {
     });
   }
 
-  async showEmailsRender() {
-    const loadingChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let i = 0;
+  async showLoading(message: string): Promise<Function> {
+    return new Promise((resolve) => {
+      const loadingChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+      let i = 0;
     const loadingInterval = setInterval(() => {
-      process.stdout.write(`\r${loadingChars[i]} Loading emails...`);
-      i = (i + 1) % loadingChars.length;
-    }, 100);
+      process.stdout.write(`\r${loadingChars[i]} ${message}...`);
+        i = (i + 1) % loadingChars.length;
+      }, 100);
+
+      function clearLoading() {
+        clearInterval(loadingInterval);
+        process.stdout.write('\r');
+      }
+
+      resolve(clearLoading);
+    });
+  }
+
+  async showEmailsRender() {
+    const clearLoading = await this.showLoading('Loading emails...');
     const emails = client.fetch(
       { all: true, from: this.selectedSource },
       { envelope: true, bodyStructure: true }
@@ -141,8 +154,7 @@ class Client {
     for await (const email of emails) {
       this.emails.push(email);
     }
-    clearInterval(loadingInterval);
-    process.stdout.write('\r');
+    clearLoading();
     const answer = await select({
       message: `${this.emails.length} emails loaded. Select email:`,
       choices: [
