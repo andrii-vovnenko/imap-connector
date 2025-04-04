@@ -232,13 +232,7 @@ class Client {
       } else if (answer.startsWith('downloadAttachment:')) {
         const index = parseInt(answer.split(':')[1]);
         const attachment = this.selectedEmail.content.attachments[index];
-        const stream = await this.imapClient.download(this.selectedEmail.seq, attachment.part);
-        
-        const chunks: Buffer[] = [];
-        for await (const chunk of stream.content) {
-          chunks.push(Buffer.from(chunk));
-        }
-        const content = Buffer.concat(chunks);
+        const content = await this.downloadAttachment(attachment);
 
         this.storage.saveAttachment(
           path.join(
@@ -251,18 +245,7 @@ class Client {
         this.renderedScreen = '';
         this.currentScreen = 'emailActions';
       } else if (answer === 'downloadEmail') {
-        const email = await this.imapClient.download(
-          this.selectedEmail.seq,
-          this.selectedEmail.content.htmlPart.part
-        );
-        let content = '';
-        for await (const chunk of email.content) {
-          if (email.meta.charset) {
-            content += chunk.toString(email.meta.charset);
-          } else {
-            content += Buffer.from(chunk);
-          }
-        }
+        const content = await this.downloadEmail();
 
         this.storage.saveEmail(
           path.join(
@@ -274,14 +257,7 @@ class Client {
         this.renderedScreen = '';
         this.currentScreen = 'emailActions';
       } else if (answer === 'downloadAndDeleteEmail') {
-        const email = await this.imapClient.download(
-          this.selectedEmail.seq,
-          this.selectedEmail.content.htmlPart.part
-        );
-        let content = '';
-        for await (const chunk of email.content) {
-          content += chunk.toString();
-        }
+        const content = await this.downloadEmail();
 
         this.storage.saveEmail(
           path.join(
@@ -293,12 +269,7 @@ class Client {
 
         if (this.selectedEmail.content.attachments.length) {
           for (const attachment of this.selectedEmail.content.attachments) {
-            const stream = await this.imapClient.download(this.selectedEmail.seq, attachment.part);
-            const chunks: Buffer[] = [];
-            for await (const chunk of stream.content) {
-              chunks.push(Buffer.from(chunk));
-            }
-            const content = Buffer.concat(chunks);
+            const content = await this.downloadAttachment(attachment);
 
             this.storage.saveAttachment(
               path.join(
@@ -317,6 +288,28 @@ class Client {
     });
   }
 
+  async downloadEmail(): Promise<string> {
+    const stream = await this.imapClient.download(this.selectedEmail.seq, this.selectedEmail.content.htmlPart.part);
+    let content = '';
+
+    for await (const chunk of stream.content) {
+      content += chunk.toString();
+    }
+
+    return content;
+  }
+
+  async downloadAttachment(attachment: any): Promise<Buffer> {
+    const stream = await this.imapClient.download(this.selectedEmail.seq, attachment.part);
+    const chunks: Buffer[] = [];
+    
+    for await (const chunk of stream.content) {
+      chunks.push(Buffer.from(chunk));
+    }
+
+    return Buffer.concat(chunks);
+  }
+
   async emailBodyRender() {
     const email = await this.imapClient.download(
       this.selectedEmail.seq,
@@ -333,12 +326,7 @@ class Client {
     const answer = await select({
       message: htmlToText(content.toString(), {
         wordwrap: false,
-        ignoreHref: true,
-        ignoreImage: true,
-        ignoreLink: true,
-        ignoreHeading: true,
         preserveNewlines: false,
-        singleNewLineParagraphs: true,
       }),
       loop: false,
       choices: [
