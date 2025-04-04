@@ -3,8 +3,9 @@ import imap from 'imapflow';
 import dotenv from 'dotenv';
 import { select, Separator } from '@inquirer/prompts'
 import { htmlToText } from 'html-to-text';
-import fs from 'fs';
-import { stdout } from 'process';
+import path from 'path';
+import { homedir } from 'os';
+import { Storage, IStorage } from './Storage';
 dotenv.config();
 
 const client = new ImapFlow({
@@ -38,8 +39,10 @@ class Client {
     'emailActions': this.emailActionsRender,
     'emailBody': this.emailBodyRender,
   };
+  private storage: IStorage;
 
-  constructor(imapClient: ImapFlow) {
+  constructor(imapClient: ImapFlow, storage: IStorage) {
+    this.storage = storage;
     this.imapClient = client;
     this.sources = [
       "K.Neunkirchen@endter.eu",
@@ -208,6 +211,10 @@ class Client {
           : []
         ),
         {
+          name: 'download and delete email',
+          value: 'downloadAndDeleteEmail',
+        },
+        {
           name: 'delete email',
           value: 'deleteEmail',
         },
@@ -225,9 +232,7 @@ class Client {
       } else if (answer.startsWith('downloadAttachment:')) {
         const index = parseInt(answer.split(':')[1]);
         const attachment = this.selectedEmail.content.attachments[index];
-        
         const stream = await this.imapClient.download(this.selectedEmail.seq, attachment.part);
-        console.log(stream);
         
         const chunks: Buffer[] = [];
         for await (const chunk of stream.content) {
@@ -235,11 +240,14 @@ class Client {
         }
         const content = Buffer.concat(chunks);
 
-        if (!fs.existsSync('attachments')) {
-          fs.mkdirSync('attachments');
-        }
-        fs.writeFileSync(`attachments/${attachment.dispositionParameters.filename.replace(/\s+/g, '_')}`, content);
-        stdout.write(`Attachment saved to attachments/${attachment.dispositionParameters.filename.replace(/\s+/g, '_')}\n`);
+        this.storage.saveAttachment(
+          path.join(
+            this.selectedSource,
+            `${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail.seq.toString()}`
+          ),
+          attachment.dispositionParameters.filename.replace(/\s+/g, '_'),
+          content
+        );
         this.renderedScreen = '';
         this.currentScreen = 'emailActions';
       } else if (answer === 'downloadEmail') {
@@ -256,14 +264,55 @@ class Client {
           }
         }
 
-        if (!fs.existsSync('emails')) {
-          fs.mkdirSync('emails');
-        }
-
-        fs.writeFileSync(`emails/${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}.html`, content);
-        stdout.write(`Email saved to emails/${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}.html\n`);
+        this.storage.saveEmail(
+          path.join(
+            this.selectedSource,
+            `${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail.seq.toString()}`
+          ),
+          content
+        );
         this.renderedScreen = '';
         this.currentScreen = 'emailActions';
+      } else if (answer === 'downloadAndDeleteEmail') {
+        const email = await this.imapClient.download(
+          this.selectedEmail.seq,
+          this.selectedEmail.content.htmlPart.part
+        );
+        let content = '';
+        for await (const chunk of email.content) {
+          content += chunk.toString();
+        }
+
+        this.storage.saveEmail(
+          path.join(
+            this.selectedSource,
+            `${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail.seq.toString()}`
+          ),
+          content
+        );
+
+        if (this.selectedEmail.content.attachments.length) {
+          for (const attachment of this.selectedEmail.content.attachments) {
+            const stream = await this.imapClient.download(this.selectedEmail.seq, attachment.part);
+            const chunks: Buffer[] = [];
+            for await (const chunk of stream.content) {
+              chunks.push(Buffer.from(chunk));
+            }
+            const content = Buffer.concat(chunks);
+
+            this.storage.saveAttachment(
+              path.join(
+                this.selectedSource,
+                `${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail.seq.toString()}`
+              ),
+              attachment.dispositionParameters.filename.replace(/\s+/g, '_'),
+              content
+            );
+          }
+        }
+
+        await this.imapClient.messageDelete({ uid: this.selectedEmail.uid });
+        this.currentScreen = 'showEmails';
       }
     });
   }
@@ -344,32 +393,6 @@ class Client {
   }
 }
 
-const fetchMessageParams: imap.FetchQueryObject = {
-  envelope: true,
-};
-
-async function main() {
-  try {
-    await client.connect();
-    let mailbox = await client.mailboxOpen('INBOX');
-    const emails = client.fetch(
-      { all: true, from: 'support@hello.pokermatch.com' },
-      { envelope: true }
-    );
-
-    for await (const email of emails) {
-      console.log(email);
-    }
-
-  } catch (e) {
-    console.error('Error connecting to IMAP server:', e);
-  } finally {
-    await client.logout();
-    console.log('Disconnected');
-  }
-
-};
-// main();
 const signals = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
 
 signals.forEach((signal) => {
@@ -381,4 +404,7 @@ signals.forEach((signal) => {
   });
 });
 
-new Client(client);
+new Client(
+  client,
+  new Storage(path.join(homedir(), 'email_backup'))
+);
