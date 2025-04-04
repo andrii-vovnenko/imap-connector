@@ -126,35 +126,54 @@ class Client {
     });
   }
 
-  async showLoading(message: string): Promise<Function> {
-    return new Promise((resolve) => {
-      const loadingChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-      let i = 0;
+  showLoading(message: string): Function {
+    const loadingChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let i = 0;
     const loadingInterval = setInterval(() => {
       process.stdout.write(`\r${loadingChars[i]} ${message}...`);
         i = (i + 1) % loadingChars.length;
-      }, 100);
+    }, 100);
 
-      function clearLoading() {
-        clearInterval(loadingInterval);
-        process.stdout.write('\r');
+    function clearLoading() {
+      clearInterval(loadingInterval);
+      process.stdout.write('\r');
+    }
+
+    return clearLoading;
+  }
+  
+
+  processEmailParts(bodyStructure: any, result: { htmlPart: any, attachments: any[] } = { htmlPart: null, attachments: [] }) {
+    if (!Array.isArray(bodyStructure)) bodyStructure = [bodyStructure];
+    for (let part of bodyStructure) {
+      if (part.type.startsWith("text/html")) {
+          result.htmlPart = part;
+      } else if (part.disposition === "attachment") {
+          result.attachments.push(part);
+      } else if (part.childNodes) {
+          this.processEmailParts(part.childNodes, result);
       }
-
-      resolve(clearLoading);
-    });
+    }
+    return result;
   }
 
-  async showEmailsRender() {
-    const clearLoading = await this.showLoading('Loading emails...');
+  async loadEmails() {
     const emails = client.fetch(
       { all: true, from: this.selectedSource },
       { envelope: true, bodyStructure: true }
     );
     this.emails = [];
     for await (const email of emails) {
+      (email as any).content = this.processEmailParts(email.bodyStructure);
       this.emails.push(email);
     }
+  }
+
+  async showEmailsRender() {
+    const clearLoading = this.showLoading('Loading emails...');
+    await this.loadEmails();
     clearLoading();
+
     const answer = await select({
       message: `${this.emails.length} emails loaded. Select email:`,
       choices: [
@@ -176,32 +195,7 @@ class Client {
   }
 
   async emailActionsRender() {
-    const email: {
-      htmlPart: any,
-      attachments: any[],
-    } = {
-      htmlPart: null,
-      attachments: [],
-    };
-
-    function processEmailParts(parts: any) {
-      if (!Array.isArray(parts)) parts = [parts];
-      for (let part of parts) {
-        if (part.type.startsWith("text/html")) {
-            email.htmlPart = part;
-        } else if (part.disposition === "attachment") {
-            email.attachments.push(part);
-        } else if (part.childNodes) {
-            processEmailParts(part.childNodes);
-        }
-      }
-    }
-
-    processEmailParts(this.selectedEmail.bodyStructure);
-
-    this.selectedEmail.content = email;
-
-    const answer = await select({
+    const answer: string = await select({
       message: `Selected email: ${this.selectedEmail.envelope.subject}. Select further actions:`,
       choices: [
         {
@@ -213,9 +207,9 @@ class Client {
           value: 'downloadEmail',
         },
         ...(
-          email.attachments.length ?
+          this.selectedEmail.content.attachments.length ?
             [new Separator('Attachments:'),
-            ...email.attachments.map((attachment: any, index: number) => ({
+            ...this.selectedEmail.content.attachments.map((attachment: any, index: number) => ({
               name: `Download attachment: ${attachment.dispositionParameters.filename || attachment.description}`,
               value: `downloadAttachment:${index}`,
             }))
@@ -244,7 +238,7 @@ class Client {
       } else if (answer.startsWith('downloadAttachment:')) {
         const index = parseInt(answer.split(':')[1]);
         const attachment = this.selectedEmail.content.attachments[index];
-        const content = await this.downloadAttachment(attachment);
+        const content = await this.downloadAttachment(this.selectedEmail.seq, attachment);
 
         this.storage.saveAttachment(
           path.join(
@@ -281,7 +275,7 @@ class Client {
 
         if (this.selectedEmail.content.attachments.length) {
           for (const attachment of this.selectedEmail.content.attachments) {
-            const content = await this.downloadAttachment(attachment);
+            const content = await this.downloadAttachment(this.selectedEmail.seq, attachment);
 
             this.storage.saveAttachment(
               path.join(
@@ -300,8 +294,8 @@ class Client {
     });
   }
 
-  async downloadEmail(): Promise<string> {
-    const stream = await this.imapClient.download(this.selectedEmail.seq, this.selectedEmail.content.htmlPart.part);
+  async downloadEmail(email = this.selectedEmail): Promise<string> {
+    const stream = await this.imapClient.download(email.seq, email.content.htmlPart.part);
     let content = '';
 
     for await (const chunk of stream.content) {
@@ -311,8 +305,8 @@ class Client {
     return content;
   }
 
-  async downloadAttachment(attachment: any): Promise<Buffer> {
-    const stream = await this.imapClient.download(this.selectedEmail.seq, attachment.part);
+  async downloadAttachment(seq: number, attachment: any): Promise<Buffer> {
+    const stream = await this.imapClient.download(seq.toString(), attachment.part);
     const chunks: Buffer[] = [];
     
     for await (const chunk of stream.content) {
@@ -323,17 +317,7 @@ class Client {
   }
 
   async emailBodyRender() {
-    const email = await this.imapClient.download(
-      this.selectedEmail.seq,
-      this.selectedEmail.content.htmlPart.part
-    );
-
-    const chunks: Buffer[] = [];
-      for await (const chunk of email.content) {
-        chunks.push(Buffer.from(chunk));
-      }
-    const content = Buffer.concat(chunks);
-
+    const content = await this.downloadEmail();
 
     const answer = await select({
       message: htmlToText(content.toString(), {
@@ -370,12 +354,16 @@ class Client {
       message: `Selected source: ${this.selectedSource}. Select further actions:`,
       choices: [
         {
-          name: 'show emails',
+          name: 'Show Emails',
           value: 'showEmails',
         },
         {
-          name: 'delete emails',
+          name: 'Delete All Emails',
           value: 'deleteEmails',
+        },
+        {
+          name: 'Store Emails And Delete',
+          value: 'storeAndDelete',
         },
         {
           name: 'back',
@@ -384,7 +372,35 @@ class Client {
       ]
     });
 
-    this.onSelect(answer, () => {});
+    this.onSelect(answer, async () => {
+      if (answer === 'deleteEmails') {
+        await this.imapClient.messageDelete({ from: this.selectedSource });
+        this.currentScreen = 'sourcesList';
+      } else if (answer === 'storeAndDelete') {
+        const clearLoading = this.showLoading('Storing emails...');
+        await this.loadEmails();
+        for (const email of this.emails) {
+          const content = await this.downloadEmail(email);
+          await this.storage.saveEmail(
+            path.join(this.selectedSource, email.envelope.subject.replace(/\s+/g, '_')),
+            content
+          );
+          if (email.content.attachments.length) {
+            for (const attachment of email.content.attachments) {
+              const content = await this.downloadAttachment(email.seq, attachment);
+              await this.storage.saveAttachment(
+                path.join(this.selectedSource, email.envelope.subject.replace(/\s+/g, '_')),
+                attachment.dispositionParameters.filename.replace(/\s+/g, '_'), 
+                content
+              );
+            }
+          }
+        }
+        clearLoading();
+        await this.imapClient.messageDelete({ from: this.selectedSource });
+        this.currentScreen = 'sourcesList';
+      }
+    });
   }
 
   exit() {

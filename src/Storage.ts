@@ -2,8 +2,8 @@ import fs from 'fs';
 import path from 'path';
 
 export interface IStorage {
-  saveEmail(filePath: string, emailContent: string): void;
-  saveAttachment(filePath: string, filename: string, attachment: Buffer): void;
+  saveEmail(filePath: string, emailContent: string): Promise<void>;
+  saveAttachment(filePath: string, filename: string, attachment: Buffer): Promise<void>;
 }
 
 export class Storage implements IStorage {
@@ -22,7 +22,7 @@ export class Storage implements IStorage {
    * @param filePath - path to save email
    * @param emailContent - text/html email content
    */
-  saveEmail(filePath: string, emailContent: string) {
+  async saveEmail(filePath: string, emailContent: string): Promise<void> {
     this._saveFile(filePath, 'email.html', emailContent);
   }
 
@@ -32,11 +32,11 @@ export class Storage implements IStorage {
    * @param filename - filename to save attachment
    * @param attachment - attachment content Buffer
    */
-  saveAttachment(filePath: string, filename: string, attachment: Buffer) {
+  async saveAttachment(filePath: string, filename: string, attachment: Buffer): Promise<void> {
     this._saveFile(path.join(filePath, 'attachments'), filename, attachment);
   }
 
-  _saveFile(filePath: string, filename: string, content: string | Buffer) {
+  _saveFile(filePath: string, filename: string, content: string | Buffer): void {
     const _path = path.join(this.basePath, filePath);
     if (!fs.existsSync(_path)) {
       fs.mkdirSync(_path, { recursive: true });
