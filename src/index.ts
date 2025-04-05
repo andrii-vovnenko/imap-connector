@@ -4,6 +4,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { Storage, IStorage } from './Storage';
 import { client, Email, IImapClient } from './ImapClient';
+import { stdout } from 'process';
 
 class Client {
   private imapClient: IImapClient;
@@ -84,7 +85,7 @@ class Client {
 
     this.onSelect(answer, async () => {
       this.mailbox = await this.imapClient.mailboxOpen(answer);
-      this.changeScreen('sourcesList');
+      this.changeScreen('selectSource');
     });
   }
 
@@ -215,7 +216,7 @@ class Client {
       message: `${this.emails.length} emails loaded. Select email:`,
       choices: [
         ...this.emails.map(email => ({
-          name: `${email.envelope.subject} ${email.content.htmlPart ? 'html' : 'text'}`,
+          name: email.envelope.subject,
           value: email as any,
         })),
         {
