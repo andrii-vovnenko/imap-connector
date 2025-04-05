@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 export interface IStorage {
-  saveEmail(filePath: string, emailContent: string): Promise<void>;
+  saveEmail(filePath: string, filename: string, emailContent: string): Promise<void>;
   saveAttachment(filePath: string, filename: string, attachment: Buffer): Promise<void>;
 }
 
@@ -22,8 +22,8 @@ export class Storage implements IStorage {
    * @param filePath - path to save email
    * @param emailContent - text/html email content
    */
-  async saveEmail(filePath: string, emailContent: string): Promise<void> {
-    this._saveFile(filePath, 'email.html', emailContent);
+  async saveEmail(filePath: string, filename: string, emailContent: string): Promise<void> {
+    this._saveFile(filePath, filename, emailContent);
   }
 
   /**

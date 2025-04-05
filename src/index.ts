@@ -1,5 +1,4 @@
 import { FetchMessageObject, ImapFlow } from 'imapflow';
-import imap from 'imapflow';
 import dotenv from 'dotenv';
 import { select, Separator } from '@inquirer/prompts'
 import { htmlToText } from 'html-to-text';
@@ -22,11 +21,17 @@ const client = new ImapFlow({
 type Email = FetchMessageObject & {
   content: {
     htmlPart: any;
+    textPart: any;
     attachments: any[];
   };
   size: number;
   mbSize: number;
 };
+
+type Mailbox = {
+  path: string;
+  name: string;
+}
 
 class Client {
   private imapClient: ImapFlow;
@@ -38,9 +43,10 @@ class Client {
   private emails: Array<Email> = [];
   private selectedEmail: Email | null = null;
   private interval: NodeJS.Timeout | null = null;
-  private mailbox: any;
+  private mailbox: Mailbox | null = null;
   private screens: Record<string, Function> = {
     'main': this.mainScreenRender,
+    'selectSource': this.selectSourceRender,
     'exit': this.exit,
     'sourcesList': this.sourcesListRender,
     'sourceActions': this.sourceActionsRender,
@@ -48,31 +54,32 @@ class Client {
     'emailActions': this.emailActionsRender,
     'emailBody': this.emailBodyRender,
   };
+  private sourceToEmailsCount: Record<string, number> = {};
   private storage: IStorage;
 
   constructor(imapClient: ImapFlow, storage: IStorage) {
     this.storage = storage;
     this.imapClient = client;
-    this.sources = [
-      "K.Neunkirchen@endter.eu",
-      "support@hello.pokermatch.com",
-      "googlecommunityteam-noreply@google.com",
-      "support=redstarpoker.eu@mail-mg.redstarpoker.com",
-      "noreply@steampowered.com",
-      "info@emails.partypoker.com",
-      "no-reply@accounts.google.com",
-      "promo@emails.partypoker.com",
-      "noreply@stepik.org",
-      "info@codewars.com",
-      "no-reply@youtube.com"
-    ];
 
     this.run();
   }
 
+
+  async loadSources() {
+    const sources = this.imapClient.fetch({ all: true }, { envelope: true });
+    const clearLoading = this.showLoading('Loading sources...');
+
+    this.sourceToEmailsCount = {};
+    for await (const source of sources) {
+      const sourceAddress = source.envelope.from[0].address || 'unknown';
+      this.sourceToEmailsCount[sourceAddress] = (this.sourceToEmailsCount[sourceAddress] || 0) + 1;
+    }
+
+    clearLoading();
+  }
+
   async run() {
     await this.imapClient.connect();
-    this.mailbox = await this.imapClient.mailboxOpen('INBOX');
     this.interval = setInterval(async () => {
       if (this.renderedScreen === this.currentScreen) return;
       this.renderedScreen = this.currentScreen;
@@ -83,8 +90,40 @@ class Client {
   }
 
   async mainScreenRender() {
-    const currentScreen = await select({
-      message: `Found ${this.sources.length} sources. Select further actions:`,
+
+    if (this.mailbox) {
+      await this.imapClient.mailboxClose();
+    }
+
+    const mailboxes = await this.imapClient.list();
+
+    const answer = await select({
+      message: `Select mailbox:`,
+      choices: [
+        ...mailboxes.map(mailbox => ({
+          name: mailbox.name,
+          value: mailbox.path,
+        })),
+        {
+          name: 'Exit',
+          value: 'exit',
+        },
+      ],
+    });
+
+    this.onSelect(answer, async () => {
+      this.mailbox = await this.imapClient.mailboxOpen(answer);
+      this.currentScreen = 'selectSource';
+    });
+  }
+
+  async selectSourceRender() {
+    const clearLoading = this.showLoading('Loading sources...');
+    await this.loadSources();
+    clearLoading();
+
+    const answer = await select({
+      message: `Found ${Object.keys(this.sourceToEmailsCount).length} sources. Select further actions:`,
       choices: [
         {
           name: 'Show Sources',
@@ -101,7 +140,12 @@ class Client {
       ],
     });
 
-    this.onSelect(currentScreen, () => {});
+    this.onSelect(answer, async () => {
+      if (answer === 'reloadSources') {
+        await this.loadSources();
+        this.currentScreen = 'sourcesList';
+      }
+    });
   }
 
   onSelect(answer: string, cb: Function) {
@@ -115,18 +159,19 @@ class Client {
 
   async sourcesListRender() {
     const answer = await select({
-      message: `Select further actions:`,
+      message: `Select source:`,
       choices: [
-        ...this.sources.map(source => ({
-          name: source,
-          value: source,
-        })),
+        ...Object.keys(this.sourceToEmailsCount)
+          .sort((a, b) => this.sourceToEmailsCount[b] - this.sourceToEmailsCount[a])
+          .map(source => ({
+              name: `${source} (${this.sourceToEmailsCount[source]})`,
+              value: source,
+            })),
         {
           name: '← Back',
           value: 'main',
         },
-      ],
-      loop: false
+      ]
     });
 
     this.onSelect(answer, () => {
@@ -152,15 +197,17 @@ class Client {
   }
   
 
-  processEmailParts(bodyStructure: any, result: { htmlPart: any, attachments: any[] } = { htmlPart: null, attachments: [] }) {
+  processEmailParts(bodyStructure: any, result: { htmlPart: any, attachments: any[], textPart: any } = { htmlPart: null, attachments: [], textPart: null }) {
     if (!Array.isArray(bodyStructure)) bodyStructure = [bodyStructure];
     for (let part of bodyStructure) {
-      if (part.type.startsWith("text/html")) {
-          result.htmlPart = part;
+      if (part.type === "text/plain") {
+        result.textPart = part;
+      } else if (part.type === "text/html") {
+        result.htmlPart = part;
       } else if (part.disposition === "attachment") {
-          result.attachments.push(part);
+        result.attachments.push(part);
       } else if (part.childNodes) {
-          this.processEmailParts(part.childNodes, result);
+        this.processEmailParts(part.childNodes, result);
       }
     }
     return result;
@@ -173,8 +220,9 @@ class Client {
     );
     this.emails = [];
     for await (const email of emails as AsyncIterable<Email>) {
+      
       email.content = this.processEmailParts(email.bodyStructure);
-      email.size = email.content.htmlPart.size + email.content.attachments.reduce((acc: number, attachment: any) => acc + attachment.size, 0);
+      email.size = (email.content.htmlPart?.size || email.content.textPart?.size) + email.content.attachments.reduce((acc: number, attachment: any) => acc + attachment.size, 0);
       email.mbSize = email.size / 1024 / 1024;
       this.emails.push(email);
     }
@@ -189,7 +237,7 @@ class Client {
       message: `${this.emails.length} emails loaded. Select email:`,
       choices: [
         ...this.emails.map(email => ({
-          name: email.envelope.subject,
+          name: `${email.envelope.subject} ${email.content.htmlPart ? 'html' : 'text'}`,
           value: email as any,
         })),
         {
@@ -270,6 +318,7 @@ class Client {
             this.selectedSource,
             `${this.selectedEmail?.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail?.seq.toString()}`
           ),
+          this.selectedEmail?.content.htmlPart ? 'email.html' : 'email.txt',
           content
         );
         this.renderedScreen = '';
@@ -282,6 +331,7 @@ class Client {
             this.selectedSource,
             `${this.selectedEmail?.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail?.seq.toString()}`
           ),
+          this.selectedEmail?.content.htmlPart ? 'email.html' : 'email.txt',
           content
         );
 
@@ -308,7 +358,7 @@ class Client {
 
   async downloadEmail(email: Email | null = this.selectedEmail): Promise<string> {
     if (!email) return '';
-    const stream = await this.imapClient.download(email.seq, email.content.htmlPart.part);
+    const stream = await this.imapClient.download(email.seq.toString(), email.content.htmlPart?.part || email.content.textPart?.part);
     let content = '';
 
     for await (const chunk of stream.content) {
@@ -391,6 +441,7 @@ class Client {
     this.onSelect(answer, async () => {
       if (answer === 'deleteEmails') {
         await this.imapClient.messageDelete({ from: this.selectedSource });
+        delete this.sourceToEmailsCount[this.selectedSource];
         this.currentScreen = 'sourcesList';
       } else if (answer === 'storeAndDelete') {
         const clearLoading = this.showLoading('Storing emails...');
@@ -398,6 +449,7 @@ class Client {
           const content = await this.downloadEmail(email);
           await this.storage.saveEmail(
             path.join(this.selectedSource, email.envelope.subject.replace(/\s+/g, '_')),
+            email.content.htmlPart ? 'email.html' : 'email.txt',
             content
           );
           if (email.content.attachments.length) {
@@ -413,6 +465,7 @@ class Client {
         }
         clearLoading();
         await this.imapClient.messageDelete({ from: this.selectedSource });
+        delete this.sourceToEmailsCount[this.selectedSource];
         this.currentScreen = 'sourcesList';
       }
     });
