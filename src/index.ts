@@ -84,7 +84,7 @@ class Client {
 
     this.onSelect(answer, async () => {
       this.mailbox = await this.imapClient.mailboxOpen(answer);
-      this.currentScreen = 'selectSource';
+      this.changeScreen('sourcesList');
     });
   }
 
@@ -114,15 +114,22 @@ class Client {
     this.onSelect(answer, async () => {
       if (answer === 'reloadSources') {
         await this.loadSources();
-        this.currentScreen = 'sourcesList';
+        this.changeScreen('sourcesList');
       }
     });
   }
 
+  changeScreen(screen: string, force: boolean = false) {
+    if (force) {
+      this.renderedScreen = '';
+    }
+
+    this.currentScreen = screen;
+  }
+
   onSelect(answer: string, cb: Function) {
     if (this.screens[answer]) {
-      this.currentScreen = answer;
-      return;
+      return this.changeScreen(answer);
     }
 
     return cb();
@@ -147,7 +154,7 @@ class Client {
 
     this.onSelect(answer, () => {
       this.selectedSource = answer;
-      this.currentScreen = 'sourceActions';
+      this.changeScreen('sourceActions');
     });
   }
 
@@ -220,7 +227,7 @@ class Client {
 
     this.onSelect(answer, () => {
       this.selectedEmail = answer as Email;
-      this.currentScreen = 'emailActions';
+      this.changeScreen('emailActions');
     });
   }
 
@@ -264,7 +271,7 @@ class Client {
     this.onSelect(answer, async () => {
       if (answer === 'deleteEmail') {
         await this.imapClient.messageDelete({ uid: (this.selectedEmail?.uid || '') as string });
-        this.currentScreen = 'showEmails';
+        this.changeScreen('showEmails');
       } else if (answer.startsWith('downloadAttachment:')) {
         const index = parseInt(answer.split(':')[1]);
         const attachment = this.selectedEmail?.content.attachments[index];
@@ -279,8 +286,7 @@ class Client {
           attachment.dispositionParameters.filename.replace(/\s+/g, '_'),
           content
         );
-        this.renderedScreen = '';
-        this.currentScreen = 'emailActions';
+        this.changeScreen('emailActions', true);
       } else if (answer === 'downloadEmail') {
         const content = await this.downloadEmail();
 
@@ -292,8 +298,7 @@ class Client {
           this.selectedEmail?.content.htmlPart ? 'email.html' : 'email.txt',
           content
         );
-        this.renderedScreen = '';
-        this.currentScreen = 'emailActions';
+        this.changeScreen('emailActions', true);
       } else if (answer === 'downloadAndDeleteEmail') {
         const content = await this.downloadEmail();
 
@@ -322,7 +327,7 @@ class Client {
         }
 
         await this.imapClient.messageDelete({ uid: (this.selectedEmail?.uid || '') as string });
-        this.currentScreen = 'showEmails';
+        this.changeScreen('showEmails');
       }
     });
   }
@@ -378,7 +383,7 @@ class Client {
     this.onSelect(answer, () => {
       if (answer === 'deleteEmail') {
         this.imapClient.messageDelete({ uid: (this.selectedEmail?.uid || '') as string });
-        this.currentScreen = 'showEmails';
+        this.changeScreen('showEmails');
       }
     });
   }
@@ -413,7 +418,7 @@ class Client {
       if (answer === 'deleteEmails') {
         await this.imapClient.messageDelete({ from: this.selectedSource });
         delete this.sourceToEmailsCount[this.selectedSource];
-        this.currentScreen = 'sourcesList';
+        this.changeScreen('sourcesList');
       } else if (answer === 'storeAndDelete') {
         const clearLoading = this.showLoading('Storing emails...');
         for (const email of this.emails) {
@@ -437,7 +442,7 @@ class Client {
         clearLoading();
         await this.imapClient.messageDelete({ from: this.selectedSource });
         delete this.sourceToEmailsCount[this.selectedSource];
-        this.currentScreen = 'sourcesList';
+        this.changeScreen('sourcesList');
       }
     });
   }
