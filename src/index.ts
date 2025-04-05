@@ -1,4 +1,4 @@
-import { ImapFlow } from 'imapflow';
+import { FetchMessageObject, ImapFlow } from 'imapflow';
 import imap from 'imapflow';
 import dotenv from 'dotenv';
 import { select, Separator } from '@inquirer/prompts'
@@ -19,6 +19,15 @@ const client = new ImapFlow({
   logger: false,
 });
 
+type Email = FetchMessageObject & {
+  content: {
+    htmlPart: any;
+    attachments: any[];
+  };
+  size: number;
+  mbSize: number;
+};
+
 class Client {
   private imapClient: ImapFlow;
   private UPDATE_SCREEN_INTERVAL = 200;
@@ -26,8 +35,8 @@ class Client {
   private renderedScreen = '';
   private selectedSource = '';
   private sources: Array<string> = [];
-  private emails: Array<any> = [];
-  private selectedEmail: any;
+  private emails: Array<Email> = [];
+  private selectedEmail: Email | null = null;
   private interval: NodeJS.Timeout | null = null;
   private mailbox: any;
   private screens: Record<string, Function> = {
@@ -78,15 +87,15 @@ class Client {
       message: `Found ${this.sources.length} sources. Select further actions:`,
       choices: [
         {
-          name: 'show sources',
+          name: 'Show Sources',
           value: 'sourcesList',
         },
         {
-          name: 'reload sources',
+          name: 'Reload Sources',
           value: 'reloadSources',
         },
         {
-          name: 'exit',
+          name: 'Exit',
           value: 'exit',
         },
       ],
@@ -113,7 +122,7 @@ class Client {
           value: source,
         })),
         {
-          name: 'back',
+          name: '← Back',
           value: 'main',
         },
       ],
@@ -163,8 +172,10 @@ class Client {
       { envelope: true, bodyStructure: true }
     );
     this.emails = [];
-    for await (const email of emails) {
-      (email as any).content = this.processEmailParts(email.bodyStructure);
+    for await (const email of emails as AsyncIterable<Email>) {
+      email.content = this.processEmailParts(email.bodyStructure);
+      email.size = email.content.htmlPart.size + email.content.attachments.reduce((acc: number, attachment: any) => acc + attachment.size, 0);
+      email.mbSize = email.size / 1024 / 1024;
       this.emails.push(email);
     }
   }
@@ -179,35 +190,35 @@ class Client {
       choices: [
         ...this.emails.map(email => ({
           name: email.envelope.subject,
-          value: email,
+          value: email as any,
         })),
         {
-          name: 'back',
+          name: '← Back',
           value: 'sourcesList',
         }
       ],
     });
 
     this.onSelect(answer, () => {
-      this.selectedEmail = answer;
+      this.selectedEmail = answer as Email;
       this.currentScreen = 'emailActions';
     });
   }
 
   async emailActionsRender() {
     const answer: string = await select({
-      message: `Selected email: ${this.selectedEmail.envelope.subject}. Select further actions:`,
+      message: `Selected email: ${this.selectedEmail?.envelope.subject}. Select further actions:`,
       choices: [
         {
-          name: 'show email',
+          name: 'Show Email',
           value: 'emailBody',
         },
         {
-          name: 'download email',
+          name: 'Download Email',
           value: 'downloadEmail',
         },
         ...(
-          this.selectedEmail.content.attachments.length ?
+          this.selectedEmail?.content.attachments.length ?
             [new Separator('Attachments:'),
             ...this.selectedEmail.content.attachments.map((attachment: any, index: number) => ({
               name: `Download attachment: ${attachment.dispositionParameters.filename || attachment.description}`,
@@ -217,15 +228,15 @@ class Client {
           : []
         ),
         {
-          name: 'download and delete email',
+          name: 'Download And Delete Email',
           value: 'downloadAndDeleteEmail',
         },
         {
-          name: 'delete email',
+          name: 'Delete Email',
           value: 'deleteEmail',
         },
         {
-          name: 'back',
+          name: '← Back',
           value: 'showEmails',
         },
       ]
@@ -233,17 +244,18 @@ class Client {
 
     this.onSelect(answer, async () => {
       if (answer === 'deleteEmail') {
-        await this.imapClient.messageDelete({ uid: this.selectedEmail });
+        await this.imapClient.messageDelete({ uid: (this.selectedEmail?.uid || '') as string });
         this.currentScreen = 'showEmails';
       } else if (answer.startsWith('downloadAttachment:')) {
         const index = parseInt(answer.split(':')[1]);
-        const attachment = this.selectedEmail.content.attachments[index];
-        const content = await this.downloadAttachment(this.selectedEmail.seq, attachment);
+        const attachment = this.selectedEmail?.content.attachments[index];
+        if (!attachment) return;
+        const content = await this.downloadAttachment(this.selectedEmail?.seq || 0, attachment);
 
         this.storage.saveAttachment(
           path.join(
             this.selectedSource,
-            `${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail.seq.toString()}`
+            `${this.selectedEmail?.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail?.seq.toString()}`
           ),
           attachment.dispositionParameters.filename.replace(/\s+/g, '_'),
           content
@@ -256,7 +268,7 @@ class Client {
         this.storage.saveEmail(
           path.join(
             this.selectedSource,
-            `${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail.seq.toString()}`
+            `${this.selectedEmail?.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail?.seq.toString()}`
           ),
           content
         );
@@ -268,19 +280,19 @@ class Client {
         this.storage.saveEmail(
           path.join(
             this.selectedSource,
-            `${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail.seq.toString()}`
+            `${this.selectedEmail?.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail?.seq.toString()}`
           ),
           content
         );
 
-        if (this.selectedEmail.content.attachments.length) {
+        if (this.selectedEmail?.content.attachments.length) {
           for (const attachment of this.selectedEmail.content.attachments) {
             const content = await this.downloadAttachment(this.selectedEmail.seq, attachment);
 
             this.storage.saveAttachment(
               path.join(
                 this.selectedSource,
-                `${this.selectedEmail.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail.seq.toString()}`
+                `${this.selectedEmail?.envelope.subject.replace(/\s+/g, '_')}_${this.selectedEmail?.seq.toString()}`
               ),
               attachment.dispositionParameters.filename.replace(/\s+/g, '_'),
               content
@@ -288,13 +300,14 @@ class Client {
           }
         }
 
-        await this.imapClient.messageDelete({ uid: this.selectedEmail.uid });
+        await this.imapClient.messageDelete({ uid: (this.selectedEmail?.uid || '') as string });
         this.currentScreen = 'showEmails';
       }
     });
   }
 
-  async downloadEmail(email = this.selectedEmail): Promise<string> {
+  async downloadEmail(email: Email | null = this.selectedEmail): Promise<string> {
+    if (!email) return '';
     const stream = await this.imapClient.download(email.seq, email.content.htmlPart.part);
     let content = '';
 
@@ -335,7 +348,7 @@ class Client {
           value: 'deleteEmail',
         },
         {
-          name: 'back',
+          name: '← Back',
           value: 'emailActions'
         }
       ]
@@ -343,18 +356,21 @@ class Client {
 
     this.onSelect(answer, () => {
       if (answer === 'deleteEmail') {
-        this.imapClient.messageDelete({ uid: this.selectedEmail });
+        this.imapClient.messageDelete({ uid: (this.selectedEmail?.uid || '') as string });
         this.currentScreen = 'showEmails';
       }
     });
   }
 
   async sourceActionsRender() {
+    const clearLoading = this.showLoading('Loading emails...');
+    await this.loadEmails();
+    clearLoading();
     const answer = await select({
       message: `Selected source: ${this.selectedSource}. Select further actions:`,
       choices: [
         {
-          name: 'Show Emails',
+          name: `Show Emails (${this.emails.length})`,
           value: 'showEmails',
         },
         {
@@ -362,11 +378,11 @@ class Client {
           value: 'deleteEmails',
         },
         {
-          name: 'Store Emails And Delete',
+          name: `Store Emails And Delete (${this.emails.reduce((acc, email) => acc + email.mbSize, 0).toFixed(2)} MB)`,
           value: 'storeAndDelete',
         },
         {
-          name: 'back',
+          name: '← Back',
           value: 'sourcesList',
         }
       ]
@@ -378,7 +394,6 @@ class Client {
         this.currentScreen = 'sourcesList';
       } else if (answer === 'storeAndDelete') {
         const clearLoading = this.showLoading('Storing emails...');
-        await this.loadEmails();
         for (const email of this.emails) {
           const content = await this.downloadEmail(email);
           await this.storage.saveEmail(
