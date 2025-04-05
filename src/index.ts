@@ -1,49 +1,20 @@
-import { FetchMessageObject, ImapFlow } from 'imapflow';
-import dotenv from 'dotenv';
 import { select, Separator } from '@inquirer/prompts'
 import { htmlToText } from 'html-to-text';
 import path from 'path';
 import { homedir } from 'os';
 import { Storage, IStorage } from './Storage';
-dotenv.config();
-
-const client = new ImapFlow({
-  host: 'imap.gmail.com',
-  port: 993,
-  secure: true,
-  auth: {
-    user: process.env.EMAIL || '',
-    pass: process.env.PASS,
-  },
-  logger: false,
-});
-
-type Email = FetchMessageObject & {
-  content: {
-    htmlPart: any;
-    textPart: any;
-    attachments: any[];
-  };
-  size: number;
-  mbSize: number;
-};
-
-type Mailbox = {
-  path: string;
-  name: string;
-}
+import { client, Email, IImapClient } from './ImapClient';
 
 class Client {
-  private imapClient: ImapFlow;
+  private imapClient: IImapClient;
   private UPDATE_SCREEN_INTERVAL = 200;
   private currentScreen = 'main';
   private renderedScreen = '';
   private selectedSource = '';
-  private sources: Array<string> = [];
   private emails: Array<Email> = [];
   private selectedEmail: Email | null = null;
   private interval: NodeJS.Timeout | null = null;
-  private mailbox: Mailbox | null = null;
+  private mailbox: any = null;
   private screens: Record<string, Function> = {
     'main': this.mainScreenRender,
     'selectSource': this.selectSourceRender,
@@ -57,9 +28,9 @@ class Client {
   private sourceToEmailsCount: Record<string, number> = {};
   private storage: IStorage;
 
-  constructor(imapClient: ImapFlow, storage: IStorage) {
+  constructor(imapClient: IImapClient, storage: IStorage) {
     this.storage = storage;
-    this.imapClient = client;
+    this.imapClient = imapClient;
 
     this.run();
   }
