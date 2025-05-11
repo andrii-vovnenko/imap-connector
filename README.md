@@ -29,3 +29,5 @@ IMAP_HOST=your.imap.server.com
 IMAP_USER=your.email@example.com
 IMAP_PASSWORD=your-password
 ```
+
+## [Create creadentials here](https://myaccount.google.com/apppasswords) 
